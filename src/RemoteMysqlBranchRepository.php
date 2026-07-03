@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App;
 
+use PDO;
+
 final class RemoteMysqlBranchRepository
 {
     /** @return array<int,array<string,mixed>> */
@@ -24,6 +26,68 @@ final class RemoteMysqlBranchRepository
         $branch = $stmt->fetch();
 
         return $branch ?: null;
+    }
+
+    /** @param array<int,int> $ids @return array<int,array<string,mixed>> */
+    public function activeByIds(array $ids): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn (int $id): bool => $id > 0)));
+        if ($ids === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = Database::connection()->prepare("SELECT * FROM remote_mysql_branches WHERE is_active = 1 AND id IN ({$placeholders}) ORDER BY name");
+        $stmt->execute($ids);
+
+        return $stmt->fetchAll();
+    }
+
+    /** @param array<string,mixed> $branch @return array<int,array{item_id:string,quantity:int,price:float}> */
+    public function mercadoLibreProducts(array $branch, int $reserve = 2, int $limit = 8000): array
+    {
+        $pdo = $this->remoteConnection($branch);
+        $limit = max(1, min($limit, 8000));
+        $stmt = $pdo->query("SELECT cantidad, precio3, MLM FROM libro WHERE MLM <> '' LIMIT 0, {$limit}");
+        $rows = [];
+
+        foreach ($stmt->fetchAll() as $row) {
+            $itemId = trim((string) ($row['MLM'] ?? ''));
+            if ($itemId === '') {
+                continue;
+            }
+
+            $quantity = max(0, (int) ($row['cantidad'] ?? 0) - $reserve);
+            $rows[] = [
+                'item_id' => $itemId,
+                'quantity' => $quantity,
+                'price' => (float) ($row['precio3'] ?? 0),
+            ];
+        }
+
+        return $rows;
+    }
+
+    /** @param array<string,mixed> $branch */
+    private function remoteConnection(array $branch): PDO
+    {
+        $host = (string) ($branch['host'] ?? '');
+        $port = (int) ($branch['port'] ?? 3306);
+        $database = (string) ($branch['database_name'] ?? '');
+        $charset = (string) ($branch['charset'] ?? 'utf8mb4');
+        $dsn = "mysql:host={$host};port={$port};dbname={$database};charset={$charset}";
+
+        return new PDO(
+            $dsn,
+            (string) ($branch['username'] ?? ''),
+            (string) ($branch['password'] ?? ''),
+            [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES => false,
+                PDO::ATTR_TIMEOUT => 10,
+            ]
+        );
     }
 
     /** @param array<string,mixed> $data */

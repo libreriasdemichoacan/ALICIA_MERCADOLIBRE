@@ -75,6 +75,33 @@ try {
             Flash::add('success', 'Stock/precio actualizado en Mercado Libre.');
             redirect('?page=stock');
         }
+        if ($action === 'sync_remote_stock') {
+            $remoteBranchIds = array_map('intval', (array) ($_POST['remote_branch_ids'] ?? []));
+            $reserve = max(0, (int) ($_POST['reserve'] ?? 2));
+            $selectedRemoteBranches = $remoteBranches->activeByIds($remoteBranchIds);
+            if ($selectedRemoteBranches === []) {
+                throw new RuntimeException('Selecciona al menos una sucursal remota activa.');
+            }
+
+            $updated = 0;
+            $errors = [];
+            foreach ($selectedRemoteBranches as $remoteBranch) {
+                try {
+                    foreach ($remoteBranches->mercadoLibreProducts($remoteBranch, $reserve) as $product) {
+                        $sync->updateStock($product['item_id'], null, $product['quantity'], $product['price'], $selectedBranch ? (int) $selectedBranch['id'] : null);
+                        $updated++;
+                    }
+                } catch (Throwable $exception) {
+                    $errors[] = $remoteBranch['name'] . ': ' . $exception->getMessage();
+                }
+            }
+
+            if ($errors !== []) {
+                Flash::add('error', 'Algunas sucursales no se pudieron procesar: ' . implode(' | ', $errors));
+            }
+            Flash::add('success', "Artículos actualizados desde sucursales remotas: {$updated}.");
+            redirect('?page=stock');
+        }
     }
 
     if ($page === 'download_label') {
@@ -286,6 +313,7 @@ function active(string $current, string $expected): string
                 </section>
             <?php endif; ?>
         <?php elseif ($page === 'stock'): ?>
+            <?php $activeRemoteBranches = array_filter($remoteBranches->all(), static fn (array $branch): bool => (int) $branch['is_active'] === 1); ?>
             <section class="panel narrow">
                 <h2>Actualizar stock y precio de publicación</h2>
                 <p>Para publicaciones simples usa solo el Item ID. Para publicaciones con variaciones agrega el Variation ID. Puedes enviar stock, precio o ambos.</p>
@@ -297,6 +325,25 @@ function active(string $current, string $expected): string
                     <label>Stock disponible<input type="number" name="quantity" min="0" placeholder="Dejar vacío si solo cambias precio"></label>
                     <label>Precio nuevo<input type="number" step="0.01" min="0" name="price" placeholder="Dejar vacío si solo cambias stock"></label>
                     <button type="submit">Actualizar en Mercado Libre</button>
+                </form>
+            </section>
+            <section class="panel narrow">
+                <h2>Actualizar desde sucursales remotas</h2>
+                <p>Consulta la tabla <code>libro</code> de una o varias sucursales remotas y actualiza Mercado Libre con <code>MLM</code> como Item ID, <code>cantidad</code> como stock y <code>precio3</code> como precio.</p>
+                <form method="post" class="stacked-form">
+                    <input type="hidden" name="action" value="sync_remote_stock">
+                    <label>Sucursales remotas activas
+                        <select name="remote_branch_ids[]" multiple size="6" required>
+                            <?php foreach ($activeRemoteBranches as $remoteBranch): ?>
+                                <option value="<?= e((string) $remoteBranch['id']) ?>"><?= e($remoteBranch['name']) ?> · <?= e($remoteBranch['database_name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </label>
+                    <label>Reserva por sucursal<input type="number" name="reserve" min="0" value="2" required></label>
+                    <button type="submit" <?= $activeRemoteBranches === [] ? 'disabled' : '' ?>>Consultar y actualizar Mercado Libre</button>
+                    <?php if ($activeRemoteBranches === []): ?>
+                        <p class="muted">Primero registra y activa una sucursal remota en la sección Sucursales.</p>
+                    <?php endif; ?>
                 </form>
             </section>
         <?php elseif ($page === 'branches'): ?>
