@@ -56,6 +56,12 @@ Para habilitar el registro de precio actualizado y permitir stock opcional en la
 mysql -u root -p mercadolibre_alicia < database/migrations/2026_06_04_add_price_and_label_storage.sql
 ```
 
+Para habilitar la nueva sección **Sucursales** con conexiones MySQL remotas para funciones futuras, ejecuta:
+
+```bash
+mysql -u root -p mercadolibre_alicia < database/migrations/2026_07_03_add_remote_mysql_branches.sql
+```
+
 ## Funcionalidades incluidas
 
 - Sucursales configurables, cada una con credenciales OAuth independientes para Mercado Libre México (`auth.mercadolibre.com.mx` para `MLM`), parámetro `state`, callback limpio y refresco de token.

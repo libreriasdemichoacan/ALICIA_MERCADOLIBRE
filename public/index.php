@@ -8,6 +8,7 @@ use App\MeliAccountRepository;
 use App\MeliClient;
 use App\MeliBranchRepository;
 use App\MeliSyncService;
+use App\RemoteMysqlBranchRepository;
 use App\SalesRepository;
 use App\Settings;
 use App\AuthCallbackHandler;
@@ -16,6 +17,7 @@ session_start();
 require __DIR__ . '/../config/bootstrap.php';
 
 $branches = new MeliBranchRepository();
+$remoteBranches = new RemoteMysqlBranchRepository();
 $selectedBranchId = (int) ($_REQUEST['branch_id'] ?? $_SESSION['branch_id'] ?? 0);
 $selectedBranch = $branches->find($selectedBranchId);
 if ($selectedBranch) {
@@ -35,6 +37,11 @@ try {
             $_SESSION['branch_id'] = $branchId;
             Flash::add('success', 'Sucursal guardada correctamente.');
             redirect('?page=settings&branch_id=' . $branchId);
+        }
+        if ($action === 'save_remote_branch') {
+            $remoteBranchId = $remoteBranches->save($_POST);
+            Flash::add('success', 'Sucursal remota guardada correctamente.');
+            redirect('?page=branches&edit_remote_branch=' . $remoteBranchId);
         }
         if ($action === 'save_settings') {
             foreach (['MELI_CLIENT_ID', 'MELI_CLIENT_SECRET', 'MELI_REDIRECT_URI', 'MELI_SITE_ID', 'MELI_SELLER_ID'] as $key) {
@@ -133,6 +140,7 @@ function active(string $current, string $expected): string
             <a class="<?= active($page, 'dashboard') ?>" href="?page=dashboard">Resumen</a>
             <a class="<?= active($page, 'sales') ?>" href="?page=sales">Ventas</a>
             <a class="<?= active($page, 'stock') ?>" href="?page=stock">Stock</a>
+            <a class="<?= active($page, 'branches') ?>" href="?page=branches">Sucursales</a>
             <a class="<?= active($page, 'settings') ?>" href="?page=settings">Configuración</a>
         </nav>
         <div class="account-card">
@@ -291,6 +299,54 @@ function active(string $current, string $expected): string
                     <button type="submit">Actualizar en Mercado Libre</button>
                 </form>
             </section>
+        <?php elseif ($page === 'branches'): ?>
+            <?php
+                $remoteBranchList = $remoteBranches->all();
+                $editingRemoteBranch = isset($_GET['new_remote_branch']) ? null : $remoteBranches->find(isset($_GET['edit_remote_branch']) ? (int) $_GET['edit_remote_branch'] : 0);
+            ?>
+            <section class="panel">
+                <h2>Sucursales con conexión MySQL remota</h2>
+                <div class="notice">
+                    Registra aquí las conexiones MySQL externas que se usarán en futuras funciones para enviar o consultar información operativa por sucursal.
+                </div>
+                <div class="table-wrap"><table>
+                    <thead><tr><th>Sucursal</th><th>Servidor</th><th>Base de datos</th><th>Usuario</th><th>Estatus</th><th>Acciones</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($remoteBranchList as $remoteBranch): ?>
+                        <tr>
+                            <td><?= e($remoteBranch['name']) ?><small><?= e($remoteBranch['code'] ?? '') ?></small></td>
+                            <td><?= e($remoteBranch['host']) ?>:<?= e((string) $remoteBranch['port']) ?><small><?= e($remoteBranch['charset']) ?></small></td>
+                            <td><?= e($remoteBranch['database_name']) ?></td>
+                            <td><?= e($remoteBranch['username']) ?></td>
+                            <td><span class="status-dot <?= (int) $remoteBranch['is_active'] === 1 ? 'enabled' : 'disabled' ?>"><?= (int) $remoteBranch['is_active'] === 1 ? 'Activa' : 'Inactiva' ?></span></td>
+                            <td><a class="button secondary" href="?page=branches&edit_remote_branch=<?= e((string) $remoteBranch['id']) ?>">Modificar</a></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    <?php if ($remoteBranchList === []): ?>
+                        <tr><td colspan="6" class="empty">Aún no hay sucursales remotas registradas.</td></tr>
+                    <?php endif; ?>
+                    </tbody>
+                </table></div>
+            </section>
+            <section class="panel narrow">
+                <h2><?= $editingRemoteBranch ? 'Modificar sucursal remota' : 'Agregar sucursal remota' ?></h2>
+                <form method="post" class="stacked-form">
+                    <input type="hidden" name="action" value="save_remote_branch">
+                    <input type="hidden" name="id" value="<?= e((string) ($editingRemoteBranch['id'] ?? '')) ?>">
+                    <label>Nombre de sucursal<input name="name" value="<?= e($editingRemoteBranch['name'] ?? '') ?>" required></label>
+                    <label>Código interno<input name="code" value="<?= e($editingRemoteBranch['code'] ?? '') ?>" placeholder="matriz, bodega-norte, sucursal-2"></label>
+                    <label>Host MySQL<input name="host" value="<?= e($editingRemoteBranch['host'] ?? '') ?>" placeholder="127.0.0.1 o servidor externo" required></label>
+                    <label>Puerto<input type="number" name="port" min="1" max="65535" value="<?= e((string) ($editingRemoteBranch['port'] ?? 3306)) ?>" required></label>
+                    <label>Base de datos<input name="database_name" value="<?= e($editingRemoteBranch['database_name'] ?? '') ?>" required></label>
+                    <label>Usuario<input name="username" value="<?= e($editingRemoteBranch['username'] ?? '') ?>" required></label>
+                    <label>Contraseña<input type="password" name="password" placeholder="<?= $editingRemoteBranch ? 'Dejar vacío para conservar la actual' : 'Contraseña MySQL' ?>"></label>
+                    <label>Charset<input name="charset" value="<?= e($editingRemoteBranch['charset'] ?? 'utf8mb4') ?>" required></label>
+                    <label>Notas<textarea name="notes" placeholder="Uso previsto o detalles de la conexión"><?= e($editingRemoteBranch['notes'] ?? '') ?></textarea></label>
+                    <label class="checkbox-label"><input type="checkbox" name="is_active" value="1" <?= !$editingRemoteBranch || (int) $editingRemoteBranch['is_active'] === 1 ? 'checked' : '' ?>> Sucursal activa</label>
+                    <button type="submit">Guardar sucursal remota</button>
+                    <a class="button secondary" href="?page=branches&new_remote_branch=1">Agregar nueva sucursal</a>
+                </form>
+            </section>
         <?php elseif ($page === 'settings'): ?>
             <?php $editingBranch = isset($_GET['new_branch']) ? null : $branches->find(isset($_GET['edit_branch']) ? (int) $_GET['edit_branch'] : ($selectedBranch['id'] ?? null)); ?>
             <section class="panel">
@@ -348,6 +404,7 @@ function pageTitle(string $page): string
         'sale' => 'Detalle de venta',
         'stock' => 'Control de stock',
         'settings' => 'Configuración',
+        'branches' => 'Sucursales',
     ][$page] ?? 'Resumen';
 }
 
