@@ -44,11 +44,12 @@ final class RemoteMysqlBranchRepository
     }
 
     /** @param array<string,mixed> $branch @return array<int,array{item_id:string,quantity:int,price:float}> */
-    public function mercadoLibreProducts(array $branch, int $reserve = 2, int $limit = 8000): array
+    public function mercadoLibreProducts(array $branch, int $reserve = 2, int $limit = 1000, int $offset = 0): array
     {
         $pdo = $this->remoteConnection($branch);
-        $limit = max(1, min($limit, 8000));
-        $stmt = $pdo->query("SELECT cantidad, precio3, MLM FROM libro WHERE MLM <> '' LIMIT 0, {$limit}");
+        $limit = max(1, min($limit, 1000));
+        $offset = max(0, $offset);
+        $stmt = $pdo->query("SELECT cantidad, precio3, MLM FROM libro WHERE MLM <> '' LIMIT {$offset}, {$limit}");
         $rows = [];
 
         foreach ($stmt->fetchAll() as $row) {
@@ -109,6 +110,24 @@ final class RemoteMysqlBranchRepository
                 PDO::ATTR_TIMEOUT => 10,
             ]
         );
+    }
+
+    /** @param array<string,mixed> $data */
+    public function logStockUpdate(array $data): void
+    {
+        $stmt = Database::connection()->prepare(
+            'INSERT INTO remote_stock_sync_logs (remote_branch_id, remote_branch_name, meli_item_id, stock_quantity, price, success, error_message) '
+            . 'VALUES (:remote_branch_id, :remote_branch_name, :meli_item_id, :stock_quantity, :price, :success, :error_message)'
+        );
+        $stmt->execute([
+            'remote_branch_id' => $data['remote_branch_id'] ?? null,
+            'remote_branch_name' => $data['remote_branch_name'] ?? null,
+            'meli_item_id' => $data['meli_item_id'] ?? '',
+            'stock_quantity' => $data['stock_quantity'] ?? null,
+            'price' => $data['price'] ?? null,
+            'success' => !empty($data['success']) ? 1 : 0,
+            'error_message' => $data['error_message'] ?? null,
+        ]);
     }
 
     /** @param array<string,mixed> $data */

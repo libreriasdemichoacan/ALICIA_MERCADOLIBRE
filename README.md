@@ -62,6 +62,12 @@ Para habilitar la nueva sección **Sucursales** con conexiones MySQL remotas par
 mysql -u root -p mercadolibre_alicia < database/migrations/2026_07_03_add_remote_mysql_branches.sql
 ```
 
+Para guardar la bitácora local de actualizaciones de stock/precio realizadas desde sucursales remotas, ejecuta:
+
+```bash
+mysql -u root -p mercadolibre_alicia < database/migrations/2026_07_03_add_remote_stock_sync_logs.sql
+```
+
 ## Funcionalidades incluidas
 
 - Sucursales configurables, cada una con credenciales OAuth independientes para Mercado Libre México (`auth.mercadolibre.com.mx` para `MLM`), parámetro `state`, callback limpio y refresco de token.
@@ -71,7 +77,7 @@ mysql -u root -p mercadolibre_alicia < database/migrations/2026_07_03_add_remote
 - Resaltado de ventas nuevas vs. ventas ya existentes después de sincronizar.
 - Control interno de estatus: venta nueva, en despacho, empacada, enviada, entregada, devuelta y cancelada.
 - Actualización de stock disponible y precio de publicaciones por item y variación.
-- Actualización masiva de stock/precio desde una o varias sucursales MySQL remotas consultando la tabla `libro` con columnas `MLM`, `cantidad` y `precio3`, reservando piezas antes de enviar el stock a Mercado Libre.
+- Actualización masiva de stock/precio desde una o varias sucursales MySQL remotas en lotes de hasta 1000 artículos, consultando la tabla `libro` con columnas `MLM`, `cantidad` y `precio3`, reservando piezas antes de enviar el stock a Mercado Libre y guardando bitácora local por conexión, item, stock, precio y fecha.
 - Descarga de guía PDF desde el detalle de venta cuando Mercado Libre ya generó un `shipping_id` con etiqueta disponible; además se guarda una copia local en `storage/labels` con el número de venta.
 - Interfaz moderna, responsive y sin dependencias externas obligatorias.
 
