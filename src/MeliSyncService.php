@@ -166,6 +166,10 @@ final class MeliSyncService
             }
         }
 
+        if ($quantity !== null && $quantity >= 1) {
+            $payload['status'] = 'active';
+        }
+
         $success = false;
         $response = null;
         $error = null;
