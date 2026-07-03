@@ -84,22 +84,33 @@ try {
             }
 
             $updated = 0;
+            $skipped = 0;
             $errors = [];
             foreach ($selectedRemoteBranches as $remoteBranch) {
                 try {
-                    foreach ($remoteBranches->mercadoLibreProducts($remoteBranch, $reserve) as $product) {
-                        $sync->updateStock($product['item_id'], null, $product['quantity'], $product['price'], $selectedBranch ? (int) $selectedBranch['id'] : null);
-                        $updated++;
-                    }
+                    $products = $remoteBranches->mercadoLibreProducts($remoteBranch, $reserve);
                 } catch (Throwable $exception) {
                     $errors[] = $remoteBranch['name'] . ': ' . $exception->getMessage();
+                    continue;
+                }
+
+                foreach ($products as $product) {
+                    try {
+                        $sync->updateStock($product['item_id'], null, $product['quantity'], $product['price'], $selectedBranch ? (int) $selectedBranch['id'] : null);
+                        $updated++;
+                    } catch (Throwable $exception) {
+                        $skipped++;
+                        if (count($errors) < 10) {
+                            $errors[] = $remoteBranch['name'] . ' / ' . $product['item_id'] . ': ' . $exception->getMessage();
+                        }
+                    }
                 }
             }
 
             if ($errors !== []) {
-                Flash::add('error', 'Algunas sucursales no se pudieron procesar: ' . implode(' | ', $errors));
+                Flash::add('error', 'Algunos artículos no se pudieron actualizar: ' . implode(' | ', $errors));
             }
-            Flash::add('success', "Artículos actualizados desde sucursales remotas: {$updated}.");
+            Flash::add('success', "Artículos actualizados desde sucursales remotas: {$updated}. Omitidos: {$skipped}.");
             redirect('?page=stock');
         }
     }

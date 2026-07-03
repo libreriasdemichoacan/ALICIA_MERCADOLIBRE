@@ -52,8 +52,9 @@ final class RemoteMysqlBranchRepository
         $rows = [];
 
         foreach ($stmt->fetchAll() as $row) {
-            $itemId = trim((string) ($row['MLM'] ?? ''));
-            if ($itemId === '') {
+            $rawItemId = trim((string) ($row['MLM'] ?? ''));
+            $itemId = $this->normalizeMeliItemId($rawItemId);
+            if ($itemId === null) {
                 continue;
             }
 
@@ -66,6 +67,26 @@ final class RemoteMysqlBranchRepository
         }
 
         return $rows;
+    }
+
+    private function normalizeMeliItemId(string $rawItemId): ?string
+    {
+        $itemId = strtoupper(trim($rawItemId));
+        $itemId = preg_replace('/\s+/', '', $itemId) ?? '';
+
+        if (preg_match('/^ML[A-Z]\d+$/', $itemId) === 1) {
+            return $itemId;
+        }
+
+        if (preg_match('/\b(ML[A-Z]\d+)\b/', $itemId, $matches) === 1) {
+            return $matches[1];
+        }
+
+        if (preg_match('/^\d+$/', $itemId) === 1) {
+            return 'MLM' . $itemId;
+        }
+
+        return null;
     }
 
     /** @param array<string,mixed> $branch */
