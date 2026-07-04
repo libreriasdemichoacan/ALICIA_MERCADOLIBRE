@@ -77,7 +77,7 @@ mysql -u root -p mercadolibre_alicia < database/migrations/2026_07_03_add_remote
 - Resaltado de ventas nuevas vs. ventas ya existentes después de sincronizar.
 - Control interno de estatus: venta nueva, en despacho, empacada, enviada, entregada, devuelta y cancelada.
 - Actualización de stock disponible y precio de publicaciones por item y variación; cuando el stock enviado es 1 o mayor, también se reactiva la publicación con `status=active` en Mercado Libre.
-- Actualización masiva de stock/precio desde una o varias sucursales MySQL remotas en lotes de hasta 1000 artículos, consultando la tabla `libro` con columnas `MLM`, `cantidad` y `precio3`, reservando piezas antes de enviar el stock a Mercado Libre y guardando bitácora local por conexión, item, stock, precio y fecha.
+- Actualización masiva de stock/precio desde una o varias sucursales MySQL remotas en lotes de hasta 1000 artículos, consultando la tabla `libro` con columnas `id`, `MLM`, `cantidad` y `precio3`, descontando apartados desde `proforma_detalle.a3` por `a10 = libro.id` y reservando piezas antes de enviar el stock a Mercado Libre y guardando bitácora local por conexión, item, stock, precio y fecha.
 - Descarga de guía PDF desde el detalle de venta cuando Mercado Libre ya generó un `shipping_id` con etiqueta disponible; además se guarda una copia local en `storage/labels` con el número de venta.
 - Interfaz moderna, responsive y sin dependencias externas obligatorias.
 

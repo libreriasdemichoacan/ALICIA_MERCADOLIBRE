@@ -49,7 +49,12 @@ final class RemoteMysqlBranchRepository
         $pdo = $this->remoteConnection($branch);
         $limit = max(1, min($limit, 1000));
         $offset = max(0, $offset);
-        $stmt = $pdo->query("SELECT cantidad, precio3, MLM FROM libro WHERE MLM <> '' LIMIT {$offset}, {$limit}");
+        $stmt = $pdo->query(
+            'SELECT libro.id, libro.cantidad, libro.precio3, libro.MLM, COALESCE(apartados.total_apartado, 0) AS apartado '
+            . 'FROM libro '
+            . 'LEFT JOIN (SELECT a10, SUM(a3) AS total_apartado FROM proforma_detalle GROUP BY a10) AS apartados ON apartados.a10 = libro.id '
+            . "WHERE libro.MLM <> '' LIMIT {$offset}, {$limit}"
+        );
         $rows = [];
 
         foreach ($stmt->fetchAll() as $row) {
@@ -59,7 +64,9 @@ final class RemoteMysqlBranchRepository
                 continue;
             }
 
-            $quantity = max(0, (int) ($row['cantidad'] ?? 0) - $reserve);
+            $stock = (int) ($row['cantidad'] ?? 0);
+            $apartado = (int) ($row['apartado'] ?? 0);
+            $quantity = max(0, $stock - $apartado - $reserve);
             $rows[] = [
                 'item_id' => $itemId,
                 'quantity' => $quantity,
