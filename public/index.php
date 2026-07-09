@@ -79,9 +79,11 @@ try {
             $_SESSION['remote_stock_job'] = [
                 'remote_branch_ids' => array_values(array_map('intval', (array) ($_POST['remote_branch_ids'] ?? []))),
                 'reserve' => max(0, (int) ($_POST['reserve'] ?? 2)),
-                'batch_size' => min(1000, max(1, (int) ($_POST['batch_size'] ?? 1000))),
+                'batch_size' => min(5000, max(1, (int) ($_POST['batch_size'] ?? 5000))),
+                'phase' => 'collect',
                 'branch_index' => 0,
                 'offset' => 0,
+                'aggregated' => [],
             ];
             redirect('?page=stock&run_remote_stock_batch=1');
         }
@@ -110,12 +112,64 @@ try {
             throw new RuntimeException('Selecciona al menos una sucursal remota activa.');
         }
 
-        $branchIndex = (int) ($job['branch_index'] ?? 0);
-        $offset = (int) ($job['offset'] ?? 0);
+        $phase = (string) ($job['phase'] ?? 'collect');
+        $batchSize = min(5000, max(1, (int) ($job['batch_size'] ?? 5000)));
         $reserve = max(0, (int) ($job['reserve'] ?? 2));
-        $batchSize = min(1000, max(1, (int) ($job['batch_size'] ?? 1000)));
-        $remoteBranch = $selectedRemoteBranches[$branchIndex] ?? null;
-        if (!$remoteBranch) {
+
+        if ($phase === 'collect') {
+            $branchIndex = (int) ($job['branch_index'] ?? 0);
+            $offset = (int) ($job['offset'] ?? 0);
+            $remoteBranch = $selectedRemoteBranches[$branchIndex] ?? null;
+            if (!$remoteBranch) {
+                $_SESSION['remote_stock_job']['phase'] = 'update';
+                $_SESSION['remote_stock_job']['items'] = array_values($_SESSION['remote_stock_job']['aggregated'] ?? []);
+                $_SESSION['remote_stock_job']['update_offset'] = 0;
+                unset($_SESSION['remote_stock_job']['aggregated']);
+                Flash::add('success', 'Lectura de sucursales finalizada. Continúa para actualizar Mercado Libre con el stock sumado.');
+                redirect('?page=stock');
+            }
+
+            try {
+                $products = $remoteBranches->mercadoLibreProducts($remoteBranch, $reserve, $batchSize, $offset);
+            } catch (Throwable $exception) {
+                $_SESSION['remote_stock_job']['branch_index'] = $branchIndex + 1;
+                $_SESSION['remote_stock_job']['offset'] = 0;
+                Flash::add('error', $remoteBranch['name'] . ': ' . $exception->getMessage());
+                redirect('?page=stock');
+            }
+
+            $aggregated = (array) ($_SESSION['remote_stock_job']['aggregated'] ?? []);
+            foreach ($products as $product) {
+                $itemId = (string) $product['item_id'];
+                if (!isset($aggregated[$itemId])) {
+                    $aggregated[$itemId] = [
+                        'item_id' => $itemId,
+                        'quantity' => 0,
+                        'price' => (float) $product['price'],
+                    ];
+                }
+                $aggregated[$itemId]['quantity'] += (int) $product['quantity'];
+                if ((float) $product['price'] > 0) {
+                    $aggregated[$itemId]['price'] = (float) $product['price'];
+                }
+            }
+            $_SESSION['remote_stock_job']['aggregated'] = $aggregated;
+
+            if (count($products) === $batchSize) {
+                $_SESSION['remote_stock_job']['offset'] = $offset + $batchSize;
+            } else {
+                $_SESSION['remote_stock_job']['branch_index'] = $branchIndex + 1;
+                $_SESSION['remote_stock_job']['offset'] = 0;
+            }
+
+            Flash::add('success', "Lote leído en {$remoteBranch['name']} desde registro {$offset}: " . count($products) . ' artículos. Stock acumulado de sucursales seleccionadas: ' . count($aggregated) . ' items.');
+            redirect('?page=stock');
+        }
+
+        $items = array_values((array) ($job['items'] ?? []));
+        $updateOffset = (int) ($job['update_offset'] ?? 0);
+        $batch = array_slice($items, $updateOffset, $batchSize);
+        if ($batch === []) {
             unset($_SESSION['remote_stock_job']);
             Flash::add('success', 'Sincronización por lotes finalizada.');
             redirect('?page=stock');
@@ -124,31 +178,23 @@ try {
         $updated = 0;
         $skipped = 0;
         $errors = [];
-        try {
-            $products = $remoteBranches->mercadoLibreProducts($remoteBranch, $reserve, $batchSize, $offset);
-        } catch (Throwable $exception) {
-            $products = [];
-            $skipped++;
-            $errors[] = $remoteBranch['name'] . ': ' . $exception->getMessage();
-        }
-
-        foreach ($products as $product) {
+        foreach ($batch as $product) {
             $success = false;
             $error = null;
             try {
-                $sync->updateStock($product['item_id'], null, $product['quantity'], $product['price'], $selectedBranch ? (int) $selectedBranch['id'] : null);
+                $sync->updateStock((string) $product['item_id'], null, (int) $product['quantity'], (float) $product['price'], $selectedBranch ? (int) $selectedBranch['id'] : null);
                 $success = true;
                 $updated++;
             } catch (Throwable $exception) {
                 $error = $exception->getMessage();
                 $skipped++;
                 if (count($errors) < 10) {
-                    $errors[] = $remoteBranch['name'] . ' / ' . $product['item_id'] . ': ' . $error;
+                    $errors[] = $product['item_id'] . ': ' . $error;
                 }
             } finally {
                 $remoteBranches->logStockUpdate([
-                    'remote_branch_id' => $remoteBranch['id'] ?? null,
-                    'remote_branch_name' => $remoteBranch['name'] ?? null,
+                    'remote_branch_id' => null,
+                    'remote_branch_name' => 'Sucursales seleccionadas',
                     'meli_item_id' => $product['item_id'] ?? '',
                     'stock_quantity' => $product['quantity'] ?? null,
                     'price' => $product['price'] ?? null,
@@ -158,19 +204,12 @@ try {
             }
         }
 
-        $hasMoreInBranch = count($products) === $batchSize;
-        if ($hasMoreInBranch) {
-            $_SESSION['remote_stock_job']['offset'] = $offset + $batchSize;
-        } else {
-            $_SESSION['remote_stock_job']['branch_index'] = $branchIndex + 1;
-            $_SESSION['remote_stock_job']['offset'] = 0;
-        }
-
-        if (!isset($selectedRemoteBranches[(int) $_SESSION['remote_stock_job']['branch_index']])) {
+        $_SESSION['remote_stock_job']['update_offset'] = $updateOffset + count($batch);
+        if ($_SESSION['remote_stock_job']['update_offset'] >= count($items)) {
             unset($_SESSION['remote_stock_job']);
-            Flash::add('success', "Lote procesado en {$remoteBranch['name']}: {$updated} actualizados, {$skipped} omitidos. Sincronización finalizada.");
+            Flash::add('success', "Lote actualizado: {$updated} actualizados, {$skipped} omitidos. Sincronización finalizada.");
         } else {
-            Flash::add('success', "Lote procesado en {$remoteBranch['name']} desde registro {$offset}: {$updated} actualizados, {$skipped} omitidos. Continúa con el siguiente lote.");
+            Flash::add('success', "Lote actualizado desde item {$updateOffset}: {$updated} actualizados, {$skipped} omitidos. Continúa con el siguiente lote.");
         }
         if ($errors !== []) {
             Flash::add('error', 'Algunos artículos no se pudieron actualizar: ' . implode(' | ', $errors));
@@ -394,7 +433,7 @@ function active(string $current, string $expected): string
             </section>
             <section class="panel narrow">
                 <h2>Actualizar desde sucursales remotas</h2>
-                <p>Consulta la tabla <code>libro</code> de una o varias sucursales remotas y actualiza Mercado Libre con <code>MLM</code> como Item ID, <code>cantidad</code> como stock y <code>precio3</code> como precio.</p>
+                <p>Consulta la tabla <code>libro</code> de una o varias sucursales remotas, suma el stock final por <code>MLM</code> de todas las sucursales seleccionadas y actualiza Mercado Libre con <code>cantidad</code> como stock y <code>precio3</code> como precio.</p>
                 <form method="post" class="stacked-form">
                     <input type="hidden" name="action" value="sync_remote_stock">
                     <label>Sucursales remotas activas
@@ -405,7 +444,7 @@ function active(string $current, string $expected): string
                         </select>
                     </label>
                     <label>Reserva por sucursal<input type="number" name="reserve" min="0" value="2" required></label>
-                    <label>Artículos por lote<input type="number" name="batch_size" min="1" max="1000" value="1000" required></label>
+                    <label>Artículos por lote<input type="number" name="batch_size" min="1" max="5000" value="5000" required></label>
                     <button type="submit" <?= $activeRemoteBranches === [] ? 'disabled' : '' ?>>Iniciar actualización por lotes</button>
                     <?php if (!empty($_SESSION['remote_stock_job'])): ?>
                         <a class="button" href="?page=stock&run_remote_stock_batch=1">Continuar siguiente lote pendiente</a>

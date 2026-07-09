@@ -44,10 +44,10 @@ final class RemoteMysqlBranchRepository
     }
 
     /** @param array<string,mixed> $branch @return array<int,array{item_id:string,quantity:int,price:float}> */
-    public function mercadoLibreProducts(array $branch, int $reserve = 2, int $limit = 1000, int $offset = 0): array
+    public function mercadoLibreProducts(array $branch, int $reserve = 2, int $limit = 5000, int $offset = 0): array
     {
         $pdo = $this->remoteConnection($branch);
-        $limit = max(1, min($limit, 1000));
+        $limit = max(1, min($limit, 5000));
         $offset = max(0, $offset);
         $stmt = $pdo->query(
             'SELECT libro.id, libro.cantidad, libro.precio3, libro.MLM, COALESCE(apartados.total_apartado, 0) AS apartado '
