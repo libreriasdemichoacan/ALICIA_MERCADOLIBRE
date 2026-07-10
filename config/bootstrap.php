@@ -19,6 +19,7 @@ spl_autoload_register(static function (string $class): void {
 });
 
 App\Config::load(ROOT_PATH . '/.env');
+date_default_timezone_set(App\Config::appTimezone());
 
 function e(?string $value): string
 {

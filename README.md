@@ -7,6 +7,7 @@ Aplicación PHP 8 + MySQL para conectar una cuenta de Mercado Libre, sincronizar
 - PHP 8.0 o superior con extensiones `pdo_mysql` y `curl`.
 - MySQL 8 o MariaDB compatible.
 - Una aplicación creada en el portal de desarrolladores de Mercado Libre con redirect URI configurada.
+- La aplicación usa `America/Mexico_City` como zona horaria local por defecto para fechas, sesiones MySQL y procesos operativos; puede sobreescribirse con `APP_TIMEZONE`.
 
 ## Instalación rápida
 
@@ -56,6 +57,18 @@ Para habilitar el registro de precio actualizado y permitir stock opcional en la
 mysql -u root -p mercadolibre_alicia < database/migrations/2026_06_04_add_price_and_label_storage.sql
 ```
 
+Para habilitar la nueva sección **Sucursales** con conexiones MySQL remotas para funciones futuras, ejecuta:
+
+```bash
+mysql -u root -p mercadolibre_alicia < database/migrations/2026_07_03_add_remote_mysql_branches.sql
+```
+
+Para guardar la bitácora local de actualizaciones de stock/precio realizadas desde sucursales remotas, ejecuta:
+
+```bash
+mysql -u root -p mercadolibre_alicia < database/migrations/2026_07_03_add_remote_stock_sync_logs.sql
+```
+
 ## Funcionalidades incluidas
 
 - Sucursales configurables, cada una con credenciales OAuth independientes para Mercado Libre México (`auth.mercadolibre.com.mx` para `MLM`), parámetro `state`, callback limpio y refresco de token.
@@ -64,7 +77,8 @@ mysql -u root -p mercadolibre_alicia < database/migrations/2026_06_04_add_price_
 - Filtros de ventas por rango de fechas, estatus y búsqueda rápida por datos visibles del listado.
 - Resaltado de ventas nuevas vs. ventas ya existentes después de sincronizar.
 - Control interno de estatus: venta nueva, en despacho, empacada, enviada, entregada, devuelta y cancelada.
-- Actualización de stock disponible y precio de publicaciones por item y variación.
+- Actualización de stock disponible y precio de publicaciones por item y variación; cuando el stock enviado es 1 o mayor, también se reactiva la publicación con `status=active` en Mercado Libre.
+- Actualización masiva de stock/precio desde una o varias sucursales MySQL remotas en lotes de hasta 5000 artículos, consultando la tabla `libro` con columnas `id`, `MLM`, `cantidad` y `precio3`, descontando apartados desde `proforma_detalle.a3` por `a10 = libro.id`, reservando piezas por sucursal y sumando el stock final de todas las sucursales seleccionadas antes de enviar el total a Mercado Libre y guardando bitácora local por conexión, item, stock, precio y fecha.
 - Descarga de guía PDF desde el detalle de venta cuando Mercado Libre ya generó un `shipping_id` con etiqueta disponible; además se guarda una copia local en `storage/labels` con el número de venta.
 - Interfaz moderna, responsive y sin dependencias externas obligatorias.
 

@@ -23,6 +23,7 @@ final class Database
                     PDO::ATTR_EMULATE_PREPARES => false,
                 ]
             );
+            self::$connection->exec("SET time_zone = '" . Config::dbTimezoneOffset() . "'");
         }
 
         return self::$connection;

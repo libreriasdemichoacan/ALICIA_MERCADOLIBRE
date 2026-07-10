@@ -8,6 +8,7 @@ use App\MeliAccountRepository;
 use App\MeliClient;
 use App\MeliBranchRepository;
 use App\MeliSyncService;
+use App\RemoteMysqlBranchRepository;
 use App\SalesRepository;
 use App\Settings;
 use App\AuthCallbackHandler;
@@ -16,6 +17,7 @@ session_start();
 require __DIR__ . '/../config/bootstrap.php';
 
 $branches = new MeliBranchRepository();
+$remoteBranches = new RemoteMysqlBranchRepository();
 $selectedBranchId = (int) ($_REQUEST['branch_id'] ?? $_SESSION['branch_id'] ?? 0);
 $selectedBranch = $branches->find($selectedBranchId);
 if ($selectedBranch) {
@@ -35,6 +37,11 @@ try {
             $_SESSION['branch_id'] = $branchId;
             Flash::add('success', 'Sucursal guardada correctamente.');
             redirect('?page=settings&branch_id=' . $branchId);
+        }
+        if ($action === 'save_remote_branch') {
+            $remoteBranchId = $remoteBranches->save($_POST);
+            Flash::add('success', 'Sucursal remota guardada correctamente.');
+            redirect('?page=branches&edit_remote_branch=' . $remoteBranchId);
         }
         if ($action === 'save_settings') {
             foreach (['MELI_CLIENT_ID', 'MELI_CLIENT_SECRET', 'MELI_REDIRECT_URI', 'MELI_SITE_ID', 'MELI_SELLER_ID'] as $key) {
@@ -68,6 +75,18 @@ try {
             Flash::add('success', 'Stock/precio actualizado en Mercado Libre.');
             redirect('?page=stock');
         }
+        if ($action === 'sync_remote_stock') {
+            $_SESSION['remote_stock_job'] = [
+                'remote_branch_ids' => array_values(array_map('intval', (array) ($_POST['remote_branch_ids'] ?? []))),
+                'reserve' => max(0, (int) ($_POST['reserve'] ?? 2)),
+                'batch_size' => min(5000, max(1, (int) ($_POST['batch_size'] ?? 5000))),
+                'phase' => 'collect',
+                'branch_index' => 0,
+                'offset' => 0,
+                'aggregated' => [],
+            ];
+            redirect('?page=stock&run_remote_stock_batch=1');
+        }
     }
 
     if ($page === 'download_label') {
@@ -77,6 +96,125 @@ try {
         header('Content-Length: ' . strlen($label['body']));
         echo $label['body'];
         exit;
+    }
+
+    if ($page === 'stock' && isset($_GET['run_remote_stock_batch'])) {
+        $job = $_SESSION['remote_stock_job'] ?? null;
+        if (!is_array($job)) {
+            Flash::add('error', 'No hay un lote de stock remoto pendiente.');
+            redirect('?page=stock');
+        }
+
+        $remoteBranchIds = array_values(array_map('intval', (array) ($job['remote_branch_ids'] ?? [])));
+        $selectedRemoteBranches = $remoteBranches->activeByIds($remoteBranchIds);
+        if ($selectedRemoteBranches === []) {
+            unset($_SESSION['remote_stock_job']);
+            throw new RuntimeException('Selecciona al menos una sucursal remota activa.');
+        }
+
+        $phase = (string) ($job['phase'] ?? 'collect');
+        $batchSize = min(5000, max(1, (int) ($job['batch_size'] ?? 5000)));
+        $reserve = max(0, (int) ($job['reserve'] ?? 2));
+
+        if ($phase === 'collect') {
+            $branchIndex = (int) ($job['branch_index'] ?? 0);
+            $offset = (int) ($job['offset'] ?? 0);
+            $remoteBranch = $selectedRemoteBranches[$branchIndex] ?? null;
+            if (!$remoteBranch) {
+                $_SESSION['remote_stock_job']['phase'] = 'update';
+                $_SESSION['remote_stock_job']['items'] = array_values($_SESSION['remote_stock_job']['aggregated'] ?? []);
+                $_SESSION['remote_stock_job']['update_offset'] = 0;
+                unset($_SESSION['remote_stock_job']['aggregated']);
+                Flash::add('success', 'Lectura de sucursales finalizada. Continúa para actualizar Mercado Libre con el stock sumado.');
+                redirect('?page=stock');
+            }
+
+            try {
+                $products = $remoteBranches->mercadoLibreProducts($remoteBranch, $reserve, $batchSize, $offset);
+            } catch (Throwable $exception) {
+                $_SESSION['remote_stock_job']['branch_index'] = $branchIndex + 1;
+                $_SESSION['remote_stock_job']['offset'] = 0;
+                Flash::add('error', $remoteBranch['name'] . ': ' . $exception->getMessage());
+                redirect('?page=stock');
+            }
+
+            $aggregated = (array) ($_SESSION['remote_stock_job']['aggregated'] ?? []);
+            foreach ($products as $product) {
+                $itemId = (string) $product['item_id'];
+                if (!isset($aggregated[$itemId])) {
+                    $aggregated[$itemId] = [
+                        'item_id' => $itemId,
+                        'quantity' => 0,
+                        'price' => (float) $product['price'],
+                    ];
+                }
+                $aggregated[$itemId]['quantity'] += (int) $product['quantity'];
+                if ((float) $product['price'] > 0) {
+                    $aggregated[$itemId]['price'] = (float) $product['price'];
+                }
+            }
+            $_SESSION['remote_stock_job']['aggregated'] = $aggregated;
+
+            if (count($products) === $batchSize) {
+                $_SESSION['remote_stock_job']['offset'] = $offset + $batchSize;
+            } else {
+                $_SESSION['remote_stock_job']['branch_index'] = $branchIndex + 1;
+                $_SESSION['remote_stock_job']['offset'] = 0;
+            }
+
+            Flash::add('success', "Lote leído en {$remoteBranch['name']} desde registro {$offset}: " . count($products) . ' artículos. Stock acumulado de sucursales seleccionadas: ' . count($aggregated) . ' items.');
+            redirect('?page=stock');
+        }
+
+        $items = array_values((array) ($job['items'] ?? []));
+        $updateOffset = (int) ($job['update_offset'] ?? 0);
+        $batch = array_slice($items, $updateOffset, $batchSize);
+        if ($batch === []) {
+            unset($_SESSION['remote_stock_job']);
+            Flash::add('success', 'Sincronización por lotes finalizada.');
+            redirect('?page=stock');
+        }
+
+        $updated = 0;
+        $skipped = 0;
+        $errors = [];
+        foreach ($batch as $product) {
+            $success = false;
+            $error = null;
+            try {
+                $sync->updateStock((string) $product['item_id'], null, (int) $product['quantity'], (float) $product['price'], $selectedBranch ? (int) $selectedBranch['id'] : null);
+                $success = true;
+                $updated++;
+            } catch (Throwable $exception) {
+                $error = $exception->getMessage();
+                $skipped++;
+                if (count($errors) < 10) {
+                    $errors[] = $product['item_id'] . ': ' . $error;
+                }
+            } finally {
+                $remoteBranches->logStockUpdate([
+                    'remote_branch_id' => null,
+                    'remote_branch_name' => 'Sucursales seleccionadas',
+                    'meli_item_id' => $product['item_id'] ?? '',
+                    'stock_quantity' => $product['quantity'] ?? null,
+                    'price' => $product['price'] ?? null,
+                    'success' => $success,
+                    'error_message' => $error,
+                ]);
+            }
+        }
+
+        $_SESSION['remote_stock_job']['update_offset'] = $updateOffset + count($batch);
+        if ($_SESSION['remote_stock_job']['update_offset'] >= count($items)) {
+            unset($_SESSION['remote_stock_job']);
+            Flash::add('success', "Lote actualizado: {$updated} actualizados, {$skipped} omitidos. Sincronización finalizada.");
+        } else {
+            Flash::add('success', "Lote actualizado desde item {$updateOffset}: {$updated} actualizados, {$skipped} omitidos. Continúa con el siguiente lote.");
+        }
+        if ($errors !== []) {
+            Flash::add('error', 'Algunos artículos no se pudieron actualizar: ' . implode(' | ', $errors));
+        }
+        redirect('?page=stock');
     }
 
     if ($page === 'connect') {
@@ -133,6 +271,7 @@ function active(string $current, string $expected): string
             <a class="<?= active($page, 'dashboard') ?>" href="?page=dashboard">Resumen</a>
             <a class="<?= active($page, 'sales') ?>" href="?page=sales">Ventas</a>
             <a class="<?= active($page, 'stock') ?>" href="?page=stock">Stock</a>
+            <a class="<?= active($page, 'branches') ?>" href="?page=branches">Sucursales</a>
             <a class="<?= active($page, 'settings') ?>" href="?page=settings">Configuración</a>
         </nav>
         <div class="account-card">
@@ -278,6 +417,7 @@ function active(string $current, string $expected): string
                 </section>
             <?php endif; ?>
         <?php elseif ($page === 'stock'): ?>
+            <?php $activeRemoteBranches = array_filter($remoteBranches->all(), static fn (array $branch): bool => (int) $branch['is_active'] === 1); ?>
             <section class="panel narrow">
                 <h2>Actualizar stock y precio de publicación</h2>
                 <p>Para publicaciones simples usa solo el Item ID. Para publicaciones con variaciones agrega el Variation ID. Puedes enviar stock, precio o ambos.</p>
@@ -289,6 +429,77 @@ function active(string $current, string $expected): string
                     <label>Stock disponible<input type="number" name="quantity" min="0" placeholder="Dejar vacío si solo cambias precio"></label>
                     <label>Precio nuevo<input type="number" step="0.01" min="0" name="price" placeholder="Dejar vacío si solo cambias stock"></label>
                     <button type="submit">Actualizar en Mercado Libre</button>
+                </form>
+            </section>
+            <section class="panel narrow">
+                <h2>Actualizar desde sucursales remotas</h2>
+                <p>Consulta la tabla <code>libro</code> de una o varias sucursales remotas, suma el stock final por <code>MLM</code> de todas las sucursales seleccionadas y actualiza Mercado Libre con <code>cantidad</code> como stock y <code>precio3</code> como precio.</p>
+                <form method="post" class="stacked-form">
+                    <input type="hidden" name="action" value="sync_remote_stock">
+                    <label>Sucursales remotas activas
+                        <select name="remote_branch_ids[]" multiple size="6" required>
+                            <?php foreach ($activeRemoteBranches as $remoteBranch): ?>
+                                <option value="<?= e((string) $remoteBranch['id']) ?>"><?= e($remoteBranch['name']) ?> · <?= e($remoteBranch['database_name']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </label>
+                    <label>Reserva por sucursal<input type="number" name="reserve" min="0" value="2" required></label>
+                    <label>Artículos por lote<input type="number" name="batch_size" min="1" max="5000" value="5000" required></label>
+                    <button type="submit" <?= $activeRemoteBranches === [] ? 'disabled' : '' ?>>Iniciar actualización por lotes</button>
+                    <?php if (!empty($_SESSION['remote_stock_job'])): ?>
+                        <a class="button" href="?page=stock&run_remote_stock_batch=1">Continuar siguiente lote pendiente</a>
+                    <?php endif; ?>
+                    <?php if ($activeRemoteBranches === []): ?>
+                        <p class="muted">Primero registra y activa una sucursal remota en la sección Sucursales.</p>
+                    <?php endif; ?>
+                </form>
+            </section>
+        <?php elseif ($page === 'branches'): ?>
+            <?php
+                $remoteBranchList = $remoteBranches->all();
+                $editingRemoteBranch = isset($_GET['new_remote_branch']) ? null : $remoteBranches->find(isset($_GET['edit_remote_branch']) ? (int) $_GET['edit_remote_branch'] : 0);
+            ?>
+            <section class="panel">
+                <h2>Sucursales con conexión MySQL remota</h2>
+                <div class="notice">
+                    Registra aquí las conexiones MySQL externas que se usarán en futuras funciones para enviar o consultar información operativa por sucursal.
+                </div>
+                <div class="table-wrap"><table>
+                    <thead><tr><th>Sucursal</th><th>Servidor</th><th>Base de datos</th><th>Usuario</th><th>Estatus</th><th>Acciones</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($remoteBranchList as $remoteBranch): ?>
+                        <tr>
+                            <td><?= e($remoteBranch['name']) ?><small><?= e($remoteBranch['code'] ?? '') ?></small></td>
+                            <td><?= e($remoteBranch['host']) ?>:<?= e((string) $remoteBranch['port']) ?><small><?= e($remoteBranch['charset']) ?></small></td>
+                            <td><?= e($remoteBranch['database_name']) ?></td>
+                            <td><?= e($remoteBranch['username']) ?></td>
+                            <td><span class="status-dot <?= (int) $remoteBranch['is_active'] === 1 ? 'enabled' : 'disabled' ?>"><?= (int) $remoteBranch['is_active'] === 1 ? 'Activa' : 'Inactiva' ?></span></td>
+                            <td><a class="button secondary" href="?page=branches&edit_remote_branch=<?= e((string) $remoteBranch['id']) ?>">Modificar</a></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    <?php if ($remoteBranchList === []): ?>
+                        <tr><td colspan="6" class="empty">Aún no hay sucursales remotas registradas.</td></tr>
+                    <?php endif; ?>
+                    </tbody>
+                </table></div>
+            </section>
+            <section class="panel narrow">
+                <h2><?= $editingRemoteBranch ? 'Modificar sucursal remota' : 'Agregar sucursal remota' ?></h2>
+                <form method="post" class="stacked-form">
+                    <input type="hidden" name="action" value="save_remote_branch">
+                    <input type="hidden" name="id" value="<?= e((string) ($editingRemoteBranch['id'] ?? '')) ?>">
+                    <label>Nombre de sucursal<input name="name" value="<?= e($editingRemoteBranch['name'] ?? '') ?>" required></label>
+                    <label>Código interno<input name="code" value="<?= e($editingRemoteBranch['code'] ?? '') ?>" placeholder="matriz, bodega-norte, sucursal-2"></label>
+                    <label>Host MySQL<input name="host" value="<?= e($editingRemoteBranch['host'] ?? '') ?>" placeholder="127.0.0.1 o servidor externo" required></label>
+                    <label>Puerto<input type="number" name="port" min="1" max="65535" value="<?= e((string) ($editingRemoteBranch['port'] ?? 3306)) ?>" required></label>
+                    <label>Base de datos<input name="database_name" value="<?= e($editingRemoteBranch['database_name'] ?? '') ?>" required></label>
+                    <label>Usuario<input name="username" value="<?= e($editingRemoteBranch['username'] ?? '') ?>" required></label>
+                    <label>Contraseña<input type="password" name="password" placeholder="<?= $editingRemoteBranch ? 'Dejar vacío para conservar la actual' : 'Contraseña MySQL' ?>"></label>
+                    <label>Charset<input name="charset" value="<?= e($editingRemoteBranch['charset'] ?? 'utf8mb4') ?>" required></label>
+                    <label>Notas<textarea name="notes" placeholder="Uso previsto o detalles de la conexión"><?= e($editingRemoteBranch['notes'] ?? '') ?></textarea></label>
+                    <label class="checkbox-label"><input type="checkbox" name="is_active" value="1" <?= !$editingRemoteBranch || (int) $editingRemoteBranch['is_active'] === 1 ? 'checked' : '' ?>> Sucursal activa</label>
+                    <button type="submit">Guardar sucursal remota</button>
+                    <a class="button secondary" href="?page=branches&new_remote_branch=1">Agregar nueva sucursal</a>
                 </form>
             </section>
         <?php elseif ($page === 'settings'): ?>
@@ -348,6 +559,7 @@ function pageTitle(string $page): string
         'sale' => 'Detalle de venta',
         'stock' => 'Control de stock',
         'settings' => 'Configuración',
+        'branches' => 'Sucursales',
     ][$page] ?? 'Resumen';
 }
 

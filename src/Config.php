@@ -34,6 +34,25 @@ final class Config
         return $value === null || $value === '' ? $default : (string) $value;
     }
 
+
+    public static function appTimezone(): string
+    {
+        return self::get('APP_TIMEZONE', 'America/Mexico_City') ?: 'America/Mexico_City';
+    }
+
+    public static function dbTimezoneOffset(): string
+    {
+        $timezone = new \DateTimeZone(self::appTimezone());
+        $now = new \DateTimeImmutable('now', $timezone);
+        $offset = $timezone->getOffset($now);
+        $sign = $offset < 0 ? '-' : '+';
+        $offset = abs($offset);
+        $hours = intdiv($offset, 3600);
+        $minutes = intdiv($offset % 3600, 60);
+
+        return sprintf('%s%02d:%02d', $sign, $hours, $minutes);
+    }
+
     public static function dbDsn(): string
     {
         $host = self::get('DB_HOST', '127.0.0.1');
