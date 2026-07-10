@@ -23,7 +23,7 @@ final class MeliSyncService
             throw new RuntimeException('Primero conecta una cuenta de Mercado Libre.');
         }
 
-        $from = gmdate('Y-m-d\TH:i:s.000-00:00', strtotime("-{$days} days"));
+        $from = date('Y-m-d\TH:i:s.000P', strtotime("-{$days} days"));
         $limit = 50;
         $offset = 0;
         $count = 0;

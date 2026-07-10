@@ -7,6 +7,7 @@ Aplicación PHP 8 + MySQL para conectar una cuenta de Mercado Libre, sincronizar
 - PHP 8.0 o superior con extensiones `pdo_mysql` y `curl`.
 - MySQL 8 o MariaDB compatible.
 - Una aplicación creada en el portal de desarrolladores de Mercado Libre con redirect URI configurada.
+- La aplicación usa `America/Mexico_City` como zona horaria local por defecto para fechas, sesiones MySQL y procesos operativos; puede sobreescribirse con `APP_TIMEZONE`.
 
 ## Instalación rápida
 
